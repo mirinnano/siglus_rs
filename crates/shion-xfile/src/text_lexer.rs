@@ -189,6 +189,22 @@ pub fn lex_text(input: &[u8]) -> Result<Vec<Token>> {
                         break;
                     }
                 }
+                // Exporters (3ds Max) write names that start with a digit,
+                // `3dsmax_Bone$0`: a character only a name can contain makes
+                // the whole run one identifier.
+                if bytes[start].is_ascii_digit()
+                    && i < bytes.len()
+                    && matches!(bytes[i], b'_' | b'$' | b'@' | b'~' | 0x80..)
+                {
+                    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
+                        i += 1;
+                    }
+                    tokens.push(Token {
+                        kind: TokenKind::Identifier(text[start..i].to_string()),
+                        offset: start,
+                    });
+                    continue;
+                }
                 let raw = &text[start..i];
                 let is_float = raw.contains('.')
                     || raw.contains('e')

@@ -394,6 +394,23 @@ fn read_header_from_reader<R: Read + ?Sized>(file: &mut R) -> Result<NwaHeader> 
     o += 4;
     let last_sample_pack_size = u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
 
+    // The decoder divides by these and sizes its unit table from them; a
+    // damaged header must be an error, not a crash or a huge allocation.
+    if !(1..=8).contains(&channels) {
+        bail!("NWA: invalid channel count {channels}");
+    }
+    if bits_per_sample != 8 && bits_per_sample != 16 {
+        bail!("NWA: unsupported bits per sample {bits_per_sample}");
+    }
+    if pack_mod != -1 {
+        if unit_sample_cnt == 0 {
+            bail!("NWA: compressed file with no samples per unit");
+        }
+        if u64::from(unit_cnt) > u64::from(sample_cnt / unit_sample_cnt) + 2 {
+            bail!("NWA: {unit_cnt} units for {sample_cnt} samples");
+        }
+    }
+
     Ok(NwaHeader {
         channels,
         bits_per_sample,
@@ -663,4 +680,56 @@ fn unpack16(
         dst_le_i16[o + 1] = s[1];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    fn header(
+        channels: u16,
+        bits: u16,
+        pack_mod: i32,
+        unit_cnt: u32,
+        samples: u32,
+        unit_samples: u32,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&channels.to_le_bytes());
+        b.extend_from_slice(&bits.to_le_bytes());
+        b.extend_from_slice(&44100u32.to_le_bytes());
+        b.extend_from_slice(&pack_mod.to_le_bytes());
+        b.extend_from_slice(&0i32.to_le_bytes());
+        b.extend_from_slice(&unit_cnt.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&samples.to_le_bytes());
+        b.extend_from_slice(&unit_samples.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn damaged_headers_are_errors() {
+        // No channels, odd sample sizes, no samples per unit and a unit
+        // table far larger than the samples: errors, not panics.
+        for bytes in [
+            header(0, 16, -1, 0, 100, 0),
+            header(2, 4, -1, 0, 100, 0),
+            header(2, 16, 2, 1, 100, 0),
+            header(2, 16, 2, u32::MAX, 100, 10),
+        ] {
+            assert!(NwaReader::open_from_bytes(bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn a_plain_header_opens() {
+        let mut bytes = header(2, 16, -1, 0, 4, 0);
+        bytes.extend_from_slice(&[0; 8]);
+        let mut reader = NwaReader::open_from_bytes(bytes).unwrap();
+        assert_eq!(reader.header().frame_count(), 2);
+        assert!(reader.to_wav_bytes().is_ok());
+    }
 }
