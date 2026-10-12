@@ -136,7 +136,13 @@ impl ApplicationHandler for App {
             return;
         }
         let (w, h) = self.game.size();
-        let scale: f64 = if w <= 640 { 2.0 } else { 1.0 };
+        let scale: f64 = if w <= 640 {
+            2.0
+        } else if w <= 800 {
+            1.5
+        } else {
+            1.0
+        };
         let attributes = WindowAttributes::default()
             .with_title(self.game.title())
             .with_resizable(true)

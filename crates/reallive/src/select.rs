@@ -601,11 +601,17 @@ pub fn draw_buttons(sys: &mut System, frame: &mut Surface) {
 }
 
 /// `select_objbtn(group)`: waits for a click on a button object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonRef {
+    pub slot: usize,
+    pub child: Option<usize>,
+}
+
 #[derive(Debug)]
 pub struct ObjectButtonSelect {
     group: i32,
     cancelable: bool,
-    hovered: Option<(usize, i32)>,
+    hovered: Option<(ButtonRef, i32)>,
     pressed: bool,
 }
 
@@ -619,59 +625,94 @@ impl ObjectButtonSelect {
         }
     }
 
-    fn buttons(&self, sys: &mut System) -> Vec<(usize, i32, Rect)> {
+    fn buttons(&self, sys: &mut System) -> Vec<(ButtonRef, i32, Rect)> {
         group_buttons(sys, self.group)
     }
 
-    fn set_state(sys: &mut System, slot: usize, state: i32) {
-        set_button_state(sys, slot, state);
+    fn set_state(sys: &mut System, bref: ButtonRef, state: i32) {
+        set_button_state(sys, bref, state);
     }
 }
 
-/// Button objects of a group, topmost first: (object slot, button number,
-/// bounds).
-fn group_buttons(sys: &mut System, group: i32) -> Vec<(usize, i32, Rect)> {
+/// Button objects of a group, topmost first: (button reference, button number, bounds).
+fn group_buttons(sys: &mut System, group: i32) -> Vec<(ButtonRef, i32, Rect)> {
     let now = sys.now();
     let gfx = &mut sys.gfx;
     let mut out = Vec::new();
     for (slot, object) in gfx.fg.iter().enumerate() {
         let Some(object) = object else { continue };
-        let b = &object.params.button;
-        if b.is_button == 0 || b.group != group || !object.params.visible {
+        if !object.params.visible {
             continue;
         }
-        let bounds = object.bounds(now, &mut gfx.fonts, &gfx.colours, (0, 0));
-        out.push((slot, b.number, bounds));
+
+        // 1. Direct button on the parent object
+        let b = &object.params.button;
+        if b.is_button != 0 && b.group == group {
+            let bounds = object.bounds(now, &mut gfx.fonts, &gfx.colours, (0, 0));
+            out.push((ButtonRef { slot, child: None }, b.number, bounds));
+        }
+
+        // 2. Buttons in child objects (ObjectData::Parent)
+        if let Some(crate::object::ObjectData::Parent(children)) = &object.data {
+            let offset = (object.params.x, object.params.y);
+            for (c_idx, child_opt) in children.iter().enumerate() {
+                if let Some(child) = child_opt {
+                    let cb = &child.params.button;
+                    if cb.is_button != 0 && cb.group == group && child.params.visible {
+                        let bounds = child.bounds(now, &mut gfx.fonts, &gfx.colours, offset);
+                        out.push((ButtonRef { slot, child: Some(c_idx) }, cb.number, bounds));
+                    }
+                }
+            }
+        }
     }
-    out.sort_by_key(|&(slot, ..)| {
-        let p = &gfx.fg[slot].as_ref().expect("present").params;
-        std::cmp::Reverse((p.z_order, p.z_layer, p.z_depth, slot))
+    out.sort_by_key(|&(b_ref, ..)| {
+        let parent = &gfx.fg[b_ref.slot].as_ref().expect("present");
+        let (z_order, z_layer, z_depth) = if let Some(c_idx) = b_ref.child {
+            if let Some(crate::object::ObjectData::Parent(children)) = &parent.data {
+                if let Some(child) = children.get(c_idx).and_then(Option::as_ref) {
+                    (child.params.z_order, child.params.z_layer, child.params.z_depth)
+                } else {
+                    (parent.params.z_order, parent.params.z_layer, parent.params.z_depth)
+                }
+            } else {
+                (parent.params.z_order, parent.params.z_layer, parent.params.z_depth)
+            }
+        } else {
+            (parent.params.z_order, parent.params.z_layer, parent.params.z_depth)
+        };
+        std::cmp::Reverse((z_order, z_layer, z_depth, b_ref.slot))
     });
     out
 }
 
-fn set_button_state(sys: &mut System, slot: usize, state: i32) {
-    if let Some(object) = sys.gfx.fg.get_mut(slot).and_then(Option::as_mut) {
-        object.params.button.state = state;
+fn set_button_state(sys: &mut System, b_ref: ButtonRef, state: i32) {
+    if let Some(child_idx) = b_ref.child {
+        if let Some(parent) = sys.gfx.fg.get_mut(b_ref.slot).and_then(Option::as_mut) {
+            if let Some(crate::object::ObjectData::Parent(children)) = &mut parent.data {
+                if let Some(child) = children.get_mut(child_idx).and_then(Option::as_mut) {
+                    child.params.button.state = state;
+                }
+            }
+        }
+    } else {
+        if let Some(object) = sys.gfx.fg.get_mut(b_ref.slot).and_then(Option::as_mut) {
+            object.params.button.state = state;
+        }
     }
 }
 
-/// `select_btnobjstart`..`select_btnobjend`: a button-object selection
-/// the script polls (`select_btnobjnow_hit`, `select_btnobjnow_decide`)
-/// instead of waiting for it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PolledButtons {
     pub group: i32,
-    hovered: Option<(usize, i32)>,
+    hovered: Option<(ButtonRef, i32)>,
     /// The button held down, and whether with the right button.
     pushed: Option<(i32, bool)>,
-    /// A click on a button not yet collected by `now_decide`, and whether
+    /// A click on a button not yet collected by now_decide, and whether
     /// it was a right click.
     decided: Option<(i32, bool)>,
-    /// `select_btnobjstart_with_right_click`: right clicks work buttons too.
     pub right_click: bool,
 }
-
 impl PolledButtons {
     pub fn new(group: i32) -> Self {
         Self {
