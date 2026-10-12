@@ -586,7 +586,7 @@ impl SiglusHost {
         &mut self.vm
     }
 
-    fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
+    pub fn resolve_initial_size(config: &SiglusHostConfig) -> (u32, u32) {
         let cfg_size = Self::try_load_gameexe(&config.project_dir)
             .as_ref()
             .and_then(Self::gameexe_screen_size)

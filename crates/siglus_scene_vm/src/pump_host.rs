@@ -31,7 +31,50 @@ pub struct SiglusPumpHandle {
     app: PumpApp,
 }
 
+
+fn aspect_fit_viewport(
+    surface_w: u32,
+    surface_h: u32,
+    game_w: u32,
+    game_h: u32,
+) -> (u32, u32, u32, u32) {
+    let surface_w = surface_w.max(1);
+    let surface_h = surface_h.max(1);
+    let game_w = game_w.max(1);
+    let game_h = game_h.max(1);
+    let scale = (surface_w as f64 / game_w as f64).min(surface_h as f64 / game_h as f64);
+    let viewport_w = ((game_w as f64 * scale).ceil() as u32)
+        .min(surface_w)
+        .max(1);
+    let viewport_h = ((game_h as f64 * scale).ceil() as u32)
+        .min(surface_h)
+        .max(1);
+    let viewport_x = surface_w.saturating_sub(viewport_w) / 2;
+    let viewport_y = surface_h.saturating_sub(viewport_h) / 2;
+    (viewport_x, viewport_y, viewport_w, viewport_h)
+}
+
+fn surface_point_to_game(
+    position_x: f64,
+    position_y: f64,
+    surface_w: u32,
+    surface_h: u32,
+    game_w: u32,
+    game_h: u32,
+) -> (i32, i32) {
+    let (vx, vy, vw, vh) = aspect_fit_viewport(surface_w, surface_h, game_w, game_h);
+    let px = position_x.round() as i64;
+    let py = position_y.round() as i64;
+    let gx = (px - vx as i64) * game_w.max(1) as i64 / vw.max(1) as i64;
+    let gy = (py - vy as i64) * game_h.max(1) as i64 / vh.max(1) as i64;
+    (
+        gx.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        gy.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+    )
+}
+
 struct PumpApp {
+    game_size: (u32, u32),
     config: SiglusHostConfig,
     window: Option<&'static dyn Window>,
     window_id: Option<WindowId>,
@@ -47,8 +90,10 @@ struct PumpApp {
 
 impl PumpApp {
     fn new(config: SiglusHostConfig) -> Self {
+        let game_size = SiglusHost::resolve_initial_size(&config);
         Self {
             physical_pixels: false,
+            game_size,
             config,
             window: None,
             window_id: None,
@@ -72,15 +117,19 @@ impl PumpApp {
         if self.window.is_some() || self.init_error.is_some() {
             return;
         }
-        let width = self.config.width.unwrap_or(1280).max(1);
-        let height = self.config.height.unwrap_or(720).max(1);
+        let (gw, gh) = self.game_size;
+        let width = self.config.width.unwrap_or(gw).max(1);
+        let height = self.config.height.unwrap_or(gh).max(1);
         let title = resolve_game_name_from_project_dir(&self.config.project_dir);
-        let attributes = WindowAttributes::default().with_title(title);
-        let attributes = if self.physical_pixels {
-            attributes.with_surface_size(winit::dpi::PhysicalSize::new(width, height))
-        } else {
-            attributes.with_surface_size(LogicalSize::new(width as f64, height as f64))
-        };
+        let attributes = WindowAttributes::default().with_title(title).with_resizable(true);
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let attributes = crate::desktop_icon::configure_window(attributes, &self.config.project_dir);
+
+        let attributes = attributes
+            .with_surface_size(LogicalSize::new(width as f64, height as f64))
+            .with_min_surface_size(LogicalSize::new(width as f64 / 2.0, height as f64 / 2.0));
+
         let window = match elwt.create_window(attributes) {
             Ok(w) => w,
             Err(e) => {
@@ -113,11 +162,21 @@ impl PumpApp {
             self.native_messagebox_callback,
             self.native_messagebox_user_data,
         );
-        if self.physical_pixels {
-            // The renderer starts from the window's own scale factor.
-            let size = window.surface_size();
-            host.resize(size.width.max(1), size.height.max(1), 1.0);
-        }
+
+        let surface = window.surface_size();
+        let (vx, vy, vw, vh) = aspect_fit_viewport(surface.width, surface.height, gw, gh);
+        host.resize_with_logical_viewport(
+            surface.width.max(1),
+            surface.height.max(1),
+            1.0,
+            gw.max(1),
+            gh.max(1),
+            vx,
+            vy,
+            vw.max(1),
+            vh.max(1),
+        );
+
         self.window_id = Some(window.id());
         self.window = Some(window);
         self.host = Some(host);
@@ -136,8 +195,19 @@ impl PumpApp {
                 elwt.exit();
             }
             WindowEvent::SurfaceResized(size) => {
-                let sf = scale as f32;
-                host.resize(size.width.max(1), size.height.max(1), sf);
+                let (gw, gh) = self.game_size;
+                let (vx, vy, vw, vh) = aspect_fit_viewport(size.width, size.height, gw, gh);
+                host.resize_with_logical_viewport(
+                    size.width.max(1),
+                    size.height.max(1),
+                    1.0,
+                    gw.max(1),
+                    gh.max(1),
+                    vx,
+                    vy,
+                    vw.max(1),
+                    vh.max(1),
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -185,9 +255,19 @@ impl PumpApp {
                 primary: true,
                 ..
             } => {
-                let p = position.to_logical::<f64>(scale);
-                let (x, y) = (p.x, p.y);
-                host.mouse_move(x, y);
+                let surface = self.window.map_or(
+                    winit::dpi::PhysicalSize::new(self.game_size.0, self.game_size.1),
+                    |w| w.surface_size(),
+                );
+                let (gx, gy) = surface_point_to_game(
+                    position.x,
+                    position.y,
+                    surface.width,
+                    surface.height,
+                    self.game_size.0,
+                    self.game_size.1,
+                );
+                host.mouse_move(gx as f64, gy as f64);
             }
             WindowEvent::PointerButton {
                 state,
@@ -199,20 +279,23 @@ impl PumpApp {
                 let Some(button) = button.mouse_button() else {
                     return;
                 };
-                let point = position.to_logical::<f64>(scale);
-                host.mouse_move(point.x, point.y);
+                let surface = self.window.map_or(
+                    winit::dpi::PhysicalSize::new(self.game_size.0, self.game_size.1),
+                    |w| w.surface_size(),
+                );
+                let (gx, gy) = surface_point_to_game(
+                    position.x,
+                    position.y,
+                    surface.width,
+                    surface.height,
+                    self.game_size.0,
+                    self.game_size.1,
+                );
+                host.mouse_move(gx as f64, gy as f64);
                 if let Some(b) = map_mouse_button(button) {
-                    match (state, b) {
-                        (ElementState::Pressed, VmMouseButton::Left) => {
-                            let (x, y) = current_mouse_pos(host);
-                            host.touch(0, x, y);
-                        }
-                        (ElementState::Released, VmMouseButton::Left) => {
-                            let (x, y) = current_mouse_pos(host);
-                            host.touch(2, x, y);
-                        }
-                        (ElementState::Pressed, b) => host.mouse_down(b),
-                        (ElementState::Released, b) => host.mouse_up(b),
+                    match state {
+                        ElementState::Pressed => host.mouse_down(b),
+                        ElementState::Released => host.mouse_up(b),
                     }
                 }
             }

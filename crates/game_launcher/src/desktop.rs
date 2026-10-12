@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use engine_detect::EngineKind;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::run_on_demand::EventLoopExtRunOnDemand;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -33,7 +33,7 @@ pub fn run(root: &Path, nls: Option<Nls>) -> i32 {
     if engine == EngineKind::Siglus {
         // Like the framebuffer engines below, the window is sized in
         // physical pixels: no HiDPI scaling for any engine in the app.
-        return siglus_scene_vm::pump_host::run_game(&root.to_string_lossy(), true);
+        return siglus_scene_vm::pump_host::run_game(&root.to_string_lossy(), false);
     }
     match run_framebuffer(root, engine, nls) {
         Ok(()) => 0,
@@ -136,12 +136,12 @@ impl ApplicationHandler for App {
             return;
         }
         let (w, h) = self.game.size();
-        let scale = if w <= 640 { 2 } else { 1 };
+        let scale: f64 = if w <= 640 { 2.0 } else { 1.0 };
         let attributes = WindowAttributes::default()
             .with_title(self.game.title())
             .with_resizable(true)
-            .with_surface_size(PhysicalSize::new(w * scale, h * scale))
-            .with_min_surface_size(PhysicalSize::new(w / 2, h / 2));
+            .with_surface_size(LogicalSize::new(w as f64 * scale, h as f64 * scale))
+            .with_min_surface_size(LogicalSize::new(w as f64 / 2.0, h as f64 / 2.0));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => window,
             Err(error) => {
