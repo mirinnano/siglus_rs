@@ -2,9 +2,24 @@ import Foundation
 import AppKit
 
 /// 最強の Discord Rich Presence (RPC) マネージャー
-/// - Unix ドメインソケット通信を完全ネイティブ実装
-/// - 自動接続 & 再接続常駐
+/// - 即時同期接続 & 確実なアクティビティ送信
+/// - 自動再接続常駐
 /// - ゲームアイコンの Catbox.moe への非同期自動アップロード & キャッシュ
+private func logRPC(_ msg: String) {
+    let line = "[DiscordRPC] " + msg + "\n"
+    print(line, terminator: "")
+    fflush(stdout)
+    if let data = line.data(using: .utf8) {
+        let logUrl = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/SiglusLauncher/console.log")
+        if let handle = try? FileHandle(forWritingTo: logUrl) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        }
+    }
+}
+
 final class DiscordRPC: @unchecked Sendable {
     static let shared = DiscordRPC()
 
@@ -43,6 +58,8 @@ final class DiscordRPC: @unchecked Sendable {
 
     private init() {
         loadCatboxCache()
+        // 即座に接続を試みる
+        _ = connectToDiscord()
         startWorker()
     }
 
@@ -59,7 +76,7 @@ final class DiscordRPC: @unchecked Sendable {
     func setIdle(gameCount: Int) {
         let act = ActivityPayload(
             state: "ライブラリ閲覧中",
-            details: "ゲームを選択中… (登録: (gameCount)本)",
+            details: "ゲームを選択中… (登録: \(gameCount)本)",
             startTimestamp: launcherStartTime,
             largeImage: "https://files.catbox.moe/3umu8k.png",
             largeText: "Siglus ランチャー",
@@ -74,12 +91,12 @@ final class DiscordRPC: @unchecked Sendable {
     /// ゲームプレイ中（アクティブ状態）のステータスを設定
     func setPlaying(game: GameEntry) {
         let startTime = Int64(Date().timeIntervalSince1970)
-        let initialImage = catboxCache[game.rootPath] ?? "https://files.catbox.moe/3umu8k.png"
+        let initialImage = catboxCache[game.rootPath] ?? "https://files.catbox.moe/22piqb.png"
 
         // ユーザー指定: 「状態をゲームタイトルにしたい」 -> state: game.title
         let act = ActivityPayload(
             state: game.title,
-            details: "(game.engineName) でプレイ中",
+            details: "\(game.engineName) でプレイ中",
             startTimestamp: startTime,
             largeImage: initialImage,
             largeText: game.title,
@@ -88,9 +105,10 @@ final class DiscordRPC: @unchecked Sendable {
             buttonLabel: "GitHub リポジトリ",
             buttonURL: "https://github.com/mirinnano/siglus_rs"
         )
+        // 即座に初期アクティビティを送信（画像アップロード完了を待たずに即時反映！）
         updateActivity(act)
 
-        // アイコンを Catbox に非同期アップロードして、完了後に Presence を更新
+        // バックグラウンドでアイコンを Catbox にアップロードして、完了後に URL を差し替え
         uploadGameIconIfNeeded(game: game) { [weak self] uploadedUrl in
             guard let self = self, let url = uploadedUrl else { return }
             self.lock.lock()
@@ -125,13 +143,21 @@ final class DiscordRPC: @unchecked Sendable {
         let connected = isConnected
         lock.unlock()
 
-        if connected {
+        if !connected {
+            _ = connectToDiscord()
+        }
+
+        lock.lock()
+        let nowConnected = isConnected
+        lock.unlock()
+
+        if nowConnected {
             sendActivity(activity)
         }
     }
 
     private func startWorker() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        DispatchQueue.global(qos: .default).async { [weak self] in
             while let self = self, self.shouldRun {
                 self.ensureConnection()
                 Thread.sleep(forTimeInterval: 5.0)
@@ -158,6 +184,7 @@ final class DiscordRPC: @unchecked Sendable {
 
     private func findDiscordSocketPath() -> String? {
         let envs = [
+            NSTemporaryDirectory(),
             ProcessInfo.processInfo.environment["TMPDIR"],
             "/tmp",
             ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"]
@@ -166,7 +193,7 @@ final class DiscordRPC: @unchecked Sendable {
         let fm = FileManager.default
         for dir in envs {
             for i in 0..<10 {
-                let path = (dir as NSString).appendingPathComponent("discord-ipc-(i)")
+                let path = (dir as NSString).appendingPathComponent("discord-ipc-\(i)")
                 if fm.fileExists(atPath: path) {
                     return path
                 }
@@ -175,16 +202,27 @@ final class DiscordRPC: @unchecked Sendable {
         return nil
     }
 
+    @discardableResult
     private func connectToDiscord() -> Bool {
+        lock.lock()
+        if isConnected && socketFd >= 0 {
+            lock.unlock()
+            return true
+        }
+        lock.unlock()
+
         guard let sockPath = findDiscordSocketPath() else {
+            logRPC("Discord IPC socket not found yet.")
             return false
         }
+        logRPC("Found socket path: " + sockPath)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
+        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
 
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
         sockPath.withCString { ptr in
@@ -200,9 +238,11 @@ final class DiscordRPC: @unchecked Sendable {
         }
 
         guard connectResult == 0 else {
+            logRPC("connect() failed with errno: \(errno)")
             close(fd)
             return false
         }
+        logRPC("connect() succeeded! Sending handshake...")
 
         // Handshake 送信 (Opcode 0)
         let handshakeObj: [String: Any] = [
@@ -215,19 +255,29 @@ final class DiscordRPC: @unchecked Sendable {
         }
 
         if !writePacket(fd: fd, opcode: 0, data: handshakeData) {
+            logRPC("writePacket(handshake) failed!")
             close(fd)
             return false
         }
+        logRPC("Handshake sent! Waiting for response...")
 
         // Handshake 応答を受信
-        if let (op, _) = readPacket(fd: fd), op == 1 {
-            lock.lock()
-            self.socketFd = fd
-            self.isConnected = true
-            lock.unlock()
-            print("[DiscordRPC] Connected successfully to Discord IPC (fd=(fd))")
-            return true
+        if let (op, body) = readPacket(fd: fd) {
+            logRPC("Received handshake opcode: \(op) len: \(body.count)")
+            if op == 1 {
+                lock.lock()
+                self.socketFd = fd
+                self.isConnected = true
+                lock.unlock()
+                logRPC("Connected and Handshake READY successfully! (socket: \(sockPath))")
+                return true
+            } else {
+                logRPC("Unexpected handshake opcode: \(op)")
+                close(fd)
+                return false
+            }
         } else {
+            logRPC("readPacket(handshake) failed!")
             close(fd)
             return false
         }
@@ -264,25 +314,22 @@ final class DiscordRPC: @unchecked Sendable {
 
     private func readPacket(fd: Int32) -> (UInt32, Data)? {
         var header = [UInt32](repeating: 0, count: 2)
-        var totalRead = 0
-        while totalRead < 8 {
-            let r = read(fd, withUnsafeMutablePointer(to: &header) { UnsafeMutableRawPointer($0).advanced(by: totalRead) }, 8 - totalRead)
-            if r <= 0 { return nil }
-            totalRead += r
-        }
+        let r = read(fd, &header, 8)
+        guard r == 8 else { return nil }
 
         let opcode = UInt32(littleEndian: header[0])
         let length = Int(UInt32(littleEndian: header[1]))
+        guard length >= 0 && length < 65536 else { return nil }
 
         var body = Data(count: length)
-        totalRead = 0
+        var totalRead = 0
         while totalRead < length {
-            let readBytes = body.withUnsafeMutableBytes { ptr -> Int in
+            let chunk = body.withUnsafeMutableBytes { ptr -> Int in
                 guard let base = ptr.baseAddress else { return -1 }
                 return read(fd, base.advanced(by: totalRead), length - totalRead)
             }
-            if readBytes <= 0 { return nil }
-            totalRead += readBytes
+            if chunk <= 0 { return nil }
+            totalRead += chunk
         }
         return (opcode, body)
     }
@@ -328,8 +375,12 @@ final class DiscordRPC: @unchecked Sendable {
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
-        if !writePacket(fd: fd, opcode: 1, data: data) {
-            print("[DiscordRPC] Failed to send activity, disconnecting...")
+        if writePacket(fd: fd, opcode: 1, data: data) {
+            logRPC("Activity successfully pushed: \(act.state) - \(act.details)")
+            // 応答フレームを消費
+            _ = readPacket(fd: fd)
+        } else {
+            logRPC("Failed to send activity, disconnecting...")
             disconnect()
         }
     }
@@ -379,7 +430,6 @@ final class DiscordRPC: @unchecked Sendable {
             return
         }
 
-        // アイコン画像データの抽出
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let pngData = self.resolveGameIconPNG(game: game)
@@ -394,7 +444,7 @@ final class DiscordRPC: @unchecked Sendable {
                     DispatchQueue.main.async {
                         self.catboxCache[game.rootPath] = url
                         self.saveCatboxCache()
-                        print("[DiscordRPC] Catbox uploaded: \(url) for \(game.title)")
+                        logRPC("Catbox uploaded: \(url) for \(game.title)")
                     }
                 }
                 completion(url)
@@ -411,7 +461,7 @@ final class DiscordRPC: @unchecked Sendable {
             candidatePaths.append(cp)
         }
 
-        let commonIcons = ["icon.png", "icon.ico", "Icon.png", "Icon.ico", "app.ico"]
+        let commonIcons = ["icon.png", "icon.ico", "Icon.png", "Icon.ico", "app.ico", "LB_EX.ico"]
         for name in commonIcons {
             let p = rootURL.appendingPathComponent(name).path
             if fm.fileExists(atPath: p) {

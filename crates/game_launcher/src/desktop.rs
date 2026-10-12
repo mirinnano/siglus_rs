@@ -322,8 +322,42 @@ struct VertexOutput {
     return output;
 }
 
+// 高品質 Catmull-Rom スプライン補間 (Bicubic Upscaling)
+// レトロな低解像度 (640x480 / 800x600) の文字・CG のジャギーを滑らかに補正して美麗に表示
+fn sample_bicubic(uv: vec2<f32>) -> vec4<f32> {
+    let tex_size = vec2<f32>(textureDimensions(frame_texture));
+    let inv_tex_size = 1.0 / tex_size;
+    let sample_pos = uv * tex_size - 0.5;
+    let tc = floor(sample_pos);
+    let f = sample_pos - tc;
+
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+
+    let w12 = w1 + w2;
+    let tc12 = tc + w2 / w12;
+
+    let tc0 = tc - 1.0;
+    let tc3 = tc + 2.0;
+
+    let uv0 = (tc0 + 0.5) * inv_tex_size;
+    let uv12 = (tc12 + 0.5) * inv_tex_size;
+    let uv3 = (tc3 + 0.5) * inv_tex_size;
+
+    var color = vec4<f32>(0.0);
+    color += textureSample(frame_texture, frame_sampler, vec2<f32>(uv12.x, uv12.y)) * (w12.x * w12.y);
+    color += textureSample(frame_texture, frame_sampler, vec2<f32>(uv0.x, uv12.y)) * (w0.x * w12.y);
+    color += textureSample(frame_texture, frame_sampler, vec2<f32>(uv3.x, uv12.y)) * (w3.x * w12.y);
+    color += textureSample(frame_texture, frame_sampler, vec2<f32>(uv12.x, uv0.y)) * (w12.x * w0.y);
+    color += textureSample(frame_texture, frame_sampler, vec2<f32>(uv12.x, uv3.y)) * (w12.x * w3.y);
+
+    return clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
+}
+
 @fragment fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(frame_texture, frame_sampler, input.uv);
+    return sample_bicubic(input.uv);
 }
 "#;
 
@@ -385,8 +419,9 @@ impl Gpu {
         };
         surface.configure(&device, &config);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

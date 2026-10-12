@@ -203,7 +203,19 @@ struct ContentView: View {
                 Image(systemName: "bubble.left.and.bubble.right.fill")
                     .font(.system(size: 9))
                     .foregroundColor(.purple)
-                Text("Discord Rich Presence: 有効 (App ID: 1559041354905034852)")
+                Text("Discord RPC: 有効")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Divider()
+                .frame(height: 12)
+
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 9))
+                    .foregroundColor(.orange)
+                Text("高画質アップスケーラー (Bicubic補間): 有効")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
