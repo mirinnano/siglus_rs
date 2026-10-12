@@ -92,6 +92,9 @@ struct ContentView: View {
         .sheet(item: $library.selectedGameForDetail) { game in
             GameDetailSheet(game: game)
         }
+        .onAppear {
+            DiscordRPC.shared.setIdle(gameCount: library.games.count)
+        }
     }
 
     private var header: some View {
@@ -126,6 +129,7 @@ struct ContentView: View {
 
             Button {
                 library.refreshAll()
+                DiscordRPC.shared.setIdle(gameCount: library.games.count)
             } label: {
                 Label("更新", systemImage: "arrow.clockwise")
             }
@@ -187,11 +191,25 @@ struct ContentView: View {
     }
 
     private var footerStatusBar: some View {
-        HStack {
-            Text("表示中: \(library.visibleGames.count) 本 / 登録済み: \(library.games.count) 本")
+        HStack(spacing: 12) {
+            Text("登録数: \(library.games.count) 本 (表示中: \(library.visibleGames.count) 本)")
                 .font(.caption2)
                 .foregroundColor(.secondary)
+
+            Divider()
+                .frame(height: 12)
+
+            HStack(spacing: 4) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(.purple)
+                Text("Discord Rich Presence: 有効 (App ID: 1559041354905034852)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
             Spacer()
+
             Text("フォルダを直接ウィンドウにドラッグ＆ドロップして追加できます")
                 .font(.caption2)
                 .foregroundColor(.secondary)
@@ -225,6 +243,7 @@ struct ContentView: View {
         group.notify(queue: .main) {
             Task { @MainActor in
                 library.importFolders(urls)
+                DiscordRPC.shared.setIdle(gameCount: library.games.count)
             }
         }
     }
@@ -608,6 +627,28 @@ struct GameDetailSheet: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+
+                    // Discord RPC 情報
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Discord 連携 (Rich Presence)")
+                            .font(.subheadline)
+                            .bold()
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.purple)
+                            Text("起動時に自動的に Discord にステータスが送信されます")
+                                .font(.caption)
+                            Spacer()
+                        }
+                        .padding(8)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(6)
+
+                        Text("・ゲーム起動中: 状態をゲームタイトル（「\(game.title)」）として表示\n・アイコン: ゲームの ico/png を Catbox にアップロードして Discord 上に美しく表示\n・Application ID: 1559041354905034852")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .padding(20)
             }
@@ -643,7 +684,7 @@ struct GameDetailSheet: View {
             .padding(16)
             .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(width: 580, height: 440)
+        .frame(width: 580, height: 470)
     }
 
     @ViewBuilder

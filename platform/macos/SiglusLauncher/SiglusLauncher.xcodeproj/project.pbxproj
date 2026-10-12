@@ -16,6 +16,7 @@
 		CB72CDABFE1E40871BEA2B02 /* LauncherMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F32CB123489260CAA126357E /* LauncherMain.swift */; };
 		D26C74BC89684A4F42AAD061 /* SiglusLauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2708E589433DDE9B0661BE70 /* SiglusLauncherApp.swift */; };
 		E065699C398006FD7312A324 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA676DC74FF028E765F24EF1 /* ContentView.swift */; };
+		F70EF721F6A4D6A01C4727DF /* DiscordRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB68539A307AEE19841EFA9C /* DiscordRPC.swift */; };
 		FE72A6D9486C9E17601CC89F /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 54762CCAD6FE9FFDCEE936FD /* AppKit.framework */; };
 /* End PBXBuildFile section */
 
@@ -27,6 +28,7 @@
 		68435CC6BC683F0CE87413A6 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		90A3687E629C1C937829FFD3 /* GameLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLibrary.swift; sourceTree = "<group>"; };
 		A54BDC18677C609E8F765EFF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AB68539A307AEE19841EFA9C /* DiscordRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscordRPC.swift; sourceTree = "<group>"; };
 		BA676DC74FF028E765F24EF1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		BCB412A196863B560C1D96B0 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		D425D78B5247AB663A491EF4 /* Siglus.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Siglus.icns; sourceTree = "<group>"; };
@@ -71,6 +73,7 @@
 			isa = PBXGroup;
 			children = (
 				BA676DC74FF028E765F24EF1 /* ContentView.swift */,
+				AB68539A307AEE19841EFA9C /* DiscordRPC.swift */,
 				90A3687E629C1C937829FFD3 /* GameLibrary.swift */,
 				A54BDC18677C609E8F765EFF /* Info.plist */,
 				F32CB123489260CAA126357E /* LauncherMain.swift */,
@@ -169,6 +172,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E065699C398006FD7312A324 /* ContentView.swift in Sources */,
+				F70EF721F6A4D6A01C4727DF /* DiscordRPC.swift in Sources */,
 				BFF0C06124C62313E05CE318 /* GameLibrary.swift in Sources */,
 				CB72CDABFE1E40871BEA2B02 /* LauncherMain.swift in Sources */,
 				D26C74BC89684A4F42AAD061 /* SiglusLauncherApp.swift in Sources */,
