@@ -27,9 +27,30 @@ private func takeString(_ ptr: UnsafeMutablePointer<CChar>?) -> String? {
 struct NlsOption: Codable, Equatable, Hashable {
     let id: String
     let label: String
+
+    var japaneseLabel: String {
+        switch id.lowercased() {
+        case "sjis", "shift-jis", "shift_jis", "cp932":
+            return "Shift-JIS (日本語)"
+        case "gbk", "gb2312", "cp936":
+            return "GBK (簡体字中国語)"
+        case "big5", "cp950":
+            return "Big5 (繁体字中国語)"
+        case "utf8", "utf-8":
+            return "UTF-8"
+        case "western", "cp1252":
+            return "Windows-1252 (欧米・英語)"
+        case "korean", "cp949", "euc-kr":
+            return "CP949 (韓国語)"
+        case "auto":
+            return "自動判別 (RLdev記録)"
+        default:
+            return label
+        }
+    }
 }
 
-/// One result of the Rust probe (see `GameInfo::to_json`).
+/// One result of the Rust probe (see GameInfo::to_json).
 struct ProbedGame: Decodable {
     let id: String?
     let root: String
@@ -85,7 +106,6 @@ struct GameEntry: Identifiable, Codable, Equatable {
         addedAtUnix = try c.decode(Int64.self, forKey: .addedAtUnix)
         lastPlayedAtUnix = try c.decodeIfPresent(Int64.self, forKey: .lastPlayedAtUnix)
         coverPath = try c.decodeIfPresent(String.self, forKey: .coverPath)
-        // Libraries written before multi-engine support only held Siglus games.
         engine = try c.decodeIfPresent(String.self, forKey: .engine) ?? "siglus"
         engineName = try c.decodeIfPresent(String.self, forKey: .engineName) ?? "SiglusEngine"
         coverKind = try c.decodeIfPresent(String.self, forKey: .coverKind)
@@ -95,7 +115,33 @@ struct GameEntry: Identifiable, Codable, Equatable {
 
     var nlsLabel: String? {
         guard let nls else { return nil }
-        return nlsOptions.first(where: { $0.id == nls })?.label ?? nls
+        return nlsOptions.first(where: { $0.id == nls })?.japaneseLabel ?? nls
+    }
+
+    var keyTomlURL: URL {
+        URL(fileURLWithPath: rootPath).appendingPathComponent("key.toml")
+    }
+
+    var hasKeyToml: Bool {
+        FileManager.default.fileExists(atPath: keyTomlURL.path)
+    }
+
+    var lastPlayedString: String {
+        guard let unix = lastPlayedAtUnix else { return "未プレイ" }
+        let date = Date(timeIntervalSince1970: TimeInterval(unix))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    var addedDateString: String {
+        let date = Date(timeIntervalSince1970: TimeInterval(addedAtUnix))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateStyle = .medium
+        return formatter.string(from: date)
     }
 }
 
@@ -110,26 +156,43 @@ struct ImportReport: Identifiable {
     var message: String {
         var lines: [String] = []
         if !imported.isEmpty {
-            lines.append("Added \(imported.count) game(s): " + imported.joined(separator: ", "))
+            lines.append("【追加完了】\(imported.count) 本のゲームを追加しました：\n・" + imported.joined(separator: "\n・"))
         }
         if !updated.isEmpty {
-            lines.append("Refreshed \(updated.count) game(s) already in the library.")
+            lines.append("【更新完了】ライブラリ内の既存ゲーム \(updated.count) 本を再スキャンして更新しました。")
         }
-        for (title, reason) in unsupported {
-            lines.append("Not supported: \(title) — \(reason)")
+        if !unsupported.isEmpty {
+            var unsList = "【非対応】以下のゲームは現在サポートされていません：\n"
+            for (title, reason) in unsupported {
+                unsList += "・\(title) (理由: \(reason))\n"
+            }
+            lines.append(unsList)
         }
-        for path in empty {
-            lines.append("No game found in \(path). Choose the folder that contains the game files (Gameexe.ini, Scene.pck, SEEN.TXT or UK2.CFG), or a folder of such folders.")
+        if !empty.isEmpty {
+            var empList = "【ゲーム未検出】ゲームファイルが見つかりませんでした：\n"
+            for path in empty {
+                empList += "・\(path)\n"
+            }
+            empList += "※ Gameexe.ini, Scene.pck, SEEN.TXT, UK2.CFG などが含まれるゲームのルートフォルダを選択してください。"
+            lines.append(empList)
         }
         return lines.joined(separator: "\n\n")
     }
 
     var title: String {
         if imported.isEmpty && updated.isEmpty {
-            return "Nothing imported"
+            return "ゲームが追加されませんでした"
         }
-        return unsupported.isEmpty && empty.isEmpty ? "Import complete" : "Import finished with notes"
+        return unsupported.isEmpty && empty.isEmpty ? "インポート完了" : "インポート結果 (確認事項あり)"
     }
+}
+
+enum GameSortOption: String, CaseIterable, Identifiable {
+    case lastPlayed = "最近プレイ順"
+    case title = "タイトル順"
+    case added = "追加日順"
+
+    var id: String { rawValue }
 }
 
 @MainActor
@@ -140,14 +203,15 @@ final class GameLibrary: ObservableObject {
     @Published var importReport: ImportReport? = nil
     @Published var isImporting: Bool = false
     @Published var searchText: String = ""
-    // Set by main.swift (launcher host) to receive a launch request.
-    // This must only stop the modal loop; the actual game entry is called outside SwiftUI.
+    @Published var selectedEngineFilter: String = "all"
+    @Published var sortOption: GameSortOption = .lastPlayed
+    @Published var selectedGameForDetail: GameEntry? = nil
+
     var onLaunchRequest: ((GameEntry) -> Void)? = nil
 
     private let fm = FileManager.default
 
-    private var supportDir: URL {
-        // ~/Library/Application Support/SiglusLauncher
+    var supportDir: URL {
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("SiglusLauncher", isDirectory: true)
         if !fm.fileExists(atPath: dir.path) {
@@ -161,16 +225,38 @@ final class GameLibrary: ObservableObject {
 
     var visibleGames: [GameEntry] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let sorted = games.sorted { a, b in
-            let ap = a.lastPlayedAtUnix ?? 0
-            let bp = b.lastPlayedAtUnix ?? 0
-            if ap != bp { return ap > bp }
-            return a.title.localizedStandardCompare(b.title) == .orderedAscending
+
+        var filtered = games
+
+        if selectedEngineFilter != "all" {
+            filtered = filtered.filter { $0.engine == selectedEngineFilter }
         }
-        if query.isEmpty { return sorted }
-        return sorted.filter {
-            $0.title.lowercased().contains(query) || $0.engineName.lowercased().contains(query)
+
+        if !query.isEmpty {
+            filtered = filtered.filter {
+                $0.title.lowercased().contains(query) || $0.engineName.lowercased().contains(query)
+            }
         }
+
+        switch sortOption {
+        case .lastPlayed:
+            filtered.sort { a, b in
+                let ap = a.lastPlayedAtUnix ?? 0
+                let bp = b.lastPlayedAtUnix ?? 0
+                if ap != bp { return ap > bp }
+                return a.title.localizedStandardCompare(b.title) == .orderedAscending
+            }
+        case .title:
+            filtered.sort { a, b in
+                a.title.localizedStandardCompare(b.title) == .orderedAscending
+            }
+        case .added:
+            filtered.sort { a, b in
+                a.addedAtUnix > b.addedAtUnix
+            }
+        }
+
+        return filtered
     }
 
     init() {
@@ -200,16 +286,14 @@ final class GameLibrary: ObservableObject {
         }
     }
 
-    // -----------------------------
-    // Import (single game, several games, or a folder of games)
-    // -----------------------------
     func importGameFolders() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.prompt = "Import"
-        panel.message = "Choose game folders, or a folder that contains several games."
+        panel.prompt = "インポート"
+        panel.title = "ゲームフォルダの選択"
+        panel.message = "追加したいゲームフォルダ（複数選択可）、または複数のゲームが入った親フォルダを選択してください。"
 
         panel.begin { [weak self] response in
             guard let self else { return }
@@ -219,8 +303,6 @@ final class GameLibrary: ObservableObject {
         }
     }
 
-    /// Scans each folder (and up to three levels of subfolders) for games,
-    /// adds the supported ones and reports the rest.
     func importFolders(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         isImporting = true
@@ -257,7 +339,7 @@ final class GameLibrary: ObservableObject {
             }
             for probe in probes {
                 guard probe.supported else {
-                    unsupported.append((probe.title, probe.unsupported_reason ?? "Unsupported engine"))
+                    unsupported.append((probe.title, probe.unsupported_reason ?? "未対応のエンジンです"))
                     continue
                 }
                 let id = probe.id ?? stableId(for: probe.root)
@@ -289,7 +371,6 @@ final class GameLibrary: ObservableObject {
         }
     }
 
-    /// Re-reads titles and covers (after an encoding change or file edits).
     func reprobe(game: GameEntry) {
         guard let idx = games.firstIndex(where: { $0.id == game.id }) else { return }
         let cacheDir = coverCacheDir.path
@@ -316,6 +397,9 @@ final class GameLibrary: ObservableObject {
         games[idx].nls = nls
         save()
         reprobe(game: games[idx])
+        if selectedGameForDetail?.id == game.id {
+            selectedGameForDetail = games[idx]
+        }
     }
 
     func refreshValidation() {
@@ -329,9 +413,6 @@ final class GameLibrary: ObservableObject {
         if changed { save() }
     }
 
-    // -----------------------------
-    // Launch request (blocking entry is called from main.swift)
-    // -----------------------------
     func launch(game: GameEntry) {
         if let idx = games.firstIndex(where: { $0.id == game.id }) {
             games[idx].lastPlayedAtUnix = Int64(Date().timeIntervalSince1970)
@@ -339,17 +420,17 @@ final class GameLibrary: ObservableObject {
         }
 
         guard let cb = onLaunchRequest else {
-            showError("Launcher host is not ready.")
+            showError("ランチャーホストが準備できていません。")
             return
         }
         cb(game)
     }
 
-    // -----------------------------
-    // UI actions
-    // -----------------------------
     func remove(game: GameEntry) {
         games.removeAll { $0.id == game.id }
+        if selectedGameForDetail?.id == game.id {
+            selectedGameForDetail = nil
+        }
         save()
     }
 
@@ -357,21 +438,61 @@ final class GameLibrary: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: game.rootPath)])
     }
 
+    func openLogsFolder() {
+        let logsURL = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Logs/SiglusLauncher", isDirectory: true)
+        try? fm.createDirectory(at: logsURL, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(logsURL)
+    }
+
+    func createKeyTomlTemplate(for game: GameEntry) {
+        let url = game.keyTomlURL
+        let template = """
+# SiglusEngine リソース復号キー設定
+# 体験版やキー不要の作品はオールゼロで動作します。
+# 未設定の場合は自動でブルートフォース解析されます。
+
+key = [
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]
+
+# 文字列暗号化の指定 ("xor", "none", "mdl")
+# override_string_encryption = "xor"
+"""
+        do {
+            try template.write(to: url, atomically: true, encoding: .utf8)
+            if let idx = games.firstIndex(where: { $0.id == game.id }) {
+                selectedGameForDetail = games[idx]
+            }
+        } catch {
+            showError("key.toml の作成に失敗しました: \(error.localizedDescription)")
+        }
+    }
+
+    func openKeyToml(for game: GameEntry) {
+        let url = game.keyTomlURL
+        if fm.fileExists(atPath: url.path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            createKeyTomlTemplate(for: game)
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func loadCoverImage(game: GameEntry) -> NSImage? {
         guard let p = game.coverPath, fm.fileExists(atPath: p) else { return nil }
         return NSImage(contentsOfFile: p)
     }
 
-    // -----------------------------
-    // Helpers
-    // -----------------------------
     private func showError(_ msg: String) {
         errorMessage = msg
         showError = true
     }
 
     private func stableId(for path: String) -> String {
-        // FNV-1a, stable across launches (String.hashValue is not).
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in path.utf8 {
             hash ^= UInt64(byte)

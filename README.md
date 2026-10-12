@@ -2,6 +2,8 @@
 
 <img src="./icon/Icon.png" alt="icon" align="left" width="100" style="margin-right: 10px;" />
 
+[日本語版 README はこちら (README_ja.md)](./README_ja.md)
+
 **siglus_rs** is an unofficial full Rust reimplementation of **UK2, AVG32, RealLive, and SiglusEngine**, with a primary focus on SiglusEngine.
 
 This project is non-commercial and intended for research purposes.

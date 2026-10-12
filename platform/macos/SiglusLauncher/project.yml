@@ -3,12 +3,12 @@ options:
   bundleIdPrefix: com.chino.siglus
 settings:
   base:
-    MACOSX_DEPLOYMENT_TARGET: "11.0"
+    MACOSX_DEPLOYMENT_TARGET: "12.0"
 targets:
   SiglusLauncher:
     type: application
     platform: macOS
-    deploymentTarget: "11.0"
+    deploymentTarget: "12.0"
     sources:
       - path: SiglusLauncher
     resources:
