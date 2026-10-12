@@ -223,7 +223,7 @@ pub fn hit(sys: &mut System) -> Option<Kind> {
     }
     let mouse = sys.input.mouse;
     for index in 0..sys.text.states.len() {
-        if !sys.text.states[index].visible || sys.text.display_off[index] {
+        if !sys.text.window_shown(index) {
             continue;
         }
         let geometry = crate::textout::geometry(sys, index);
@@ -243,8 +243,8 @@ pub fn press(machine: &mut crate::machine::Machine, kind: Kind) -> anyhow::Resul
     let sys = &mut machine.sys;
     match kind {
         Kind::Clear => sys.text.hidden_temporarily = true,
-        Kind::MsgBk | Kind::MsgBkLeft => crate::backlog::open(sys),
-        Kind::MsgBkRight => {}
+        Kind::MsgBk | Kind::MsgBkLeft => crate::backlog::back(sys),
+        Kind::MsgBkRight => crate::backlog::forward(sys),
         Kind::KoePlay => {
             let (koe, _) = sys.last_koe;
             if koe >= 0 {

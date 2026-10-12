@@ -117,6 +117,8 @@ pub struct System {
     /// A polled button-object selection (`select_btnobjstart`).
     pub polled_buttons: Option<crate::select::PolledButtons>,
     pub sound: crate::sound::Sound,
+    /// The music at the last savepoint (saved with the game).
+    pub savepoint_bgm: Option<(String, bool)>,
     pub movie: Option<crate::movie::Movie>,
 }
 
@@ -176,6 +178,7 @@ impl System {
         let sound = crate::sound::Sound::new(&gameexe, options.audio);
         Self {
             sound,
+            savepoint_bgm: None,
             movie: None,
             gfx: Graphics {
                 tone_curves,
@@ -226,12 +229,25 @@ impl System {
         }
     }
 
+    /// A script-drawn system menu returned: what it hid with `CCOM_*`
+    /// shows again.
+    pub fn leave_menu(&mut self) {
+        self.in_menu = false;
+        self.text.ccom_off.fill(false);
+        self.gfx.clear_ccom();
+    }
+
     pub fn request_fade_out(&mut self) {
         self.fade_out_requested = true;
     }
 
     /// Clears what is on screen and playing (load, return to menu).
     pub fn reset_presentation(&mut self) {
+        self.in_menu = false;
+        let now = self.clock.now();
+        self.sound.koe_stop();
+        self.sound.wav_stop_all(0, now);
+        self.stop_movie();
         self.ui.overlay = None;
         self.ui.requests.clear();
         self.text.reset();
@@ -242,6 +258,11 @@ impl System {
     pub fn save_state(&self, w: &mut Writer) {
         w.section("text", |w| self.text.save(w));
         w.section("graphics", |w| self.gfx.save(w));
+        w.section("sound", |w| {
+            let (name, looped) = self.savepoint_bgm.clone().unwrap_or_default();
+            w.str(&name);
+            w.bool(looped);
+        });
     }
 
     pub fn load_state(&mut self, sections: &[(String, &[u8])]) -> Result<()> {
@@ -249,6 +270,26 @@ impl System {
             let mut r = crate::serial::Reader::new(body);
             match name.as_str() {
                 "text" => self.text.load(&mut r)?,
+                "sound" => {
+                    let name = r.str()?;
+                    let looped = r.bool()?;
+                    let now = self.clock.now();
+                    if name.is_empty() {
+                        self.sound.bgm_stop();
+                    } else if self.sound.current_track(now) != Some((name.clone(), looped)) {
+                        // A missing track is not worth failing the load for.
+                        let _ = self.sound.bgm_play(
+                            &self.resources,
+                            &self.settings,
+                            now,
+                            &name,
+                            looped,
+                            0,
+                            0,
+                        );
+                    }
+                    self.savepoint_bgm = Some((name, looped)).filter(|(n, _)| !n.is_empty());
+                }
                 "graphics" => {
                     self.gfx.load(&mut r, &self.resources)?;
                     let now = self.clock.now();
@@ -288,6 +329,7 @@ impl System {
     }
 
     pub fn take_savepoint(&mut self) {
+        self.savepoint_bgm = self.sound.current_track(self.clock.now());
         self.text.take_savepoint();
         self.gfx.take_savepoint();
     }

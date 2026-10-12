@@ -56,6 +56,19 @@ mod imp {
         fs::write(path, bytes)
     }
 
+    pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(".tmp");
+        let temp = std::path::PathBuf::from(temp);
+        {
+            use std::io::Write;
+            let mut file = fs::File::create(&temp)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp, path)
+    }
+
     pub fn create_dir_all(path: &Path) -> io::Result<()> {
         fs::create_dir_all(path)
     }
@@ -172,6 +185,10 @@ mod imp {
         js_write(&key(path), bytes).map_err(js_error)
     }
 
+    pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        write(path, bytes)
+    }
+
     pub fn create_dir_all(_path: &Path) -> io::Result<()> {
         Ok(())
     }
@@ -257,6 +274,12 @@ pub fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
 
 pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     imp::write(path.as_ref(), bytes.as_ref())
+}
+
+/// Replaces the file in one step: a crash leaves the old or the new
+/// contents, never a truncated file.
+pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    imp::write_atomic(path.as_ref(), bytes.as_ref())
 }
 
 pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {

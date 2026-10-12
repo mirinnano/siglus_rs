@@ -117,6 +117,8 @@ pub struct Machine {
     pub saved_in_memory: std::collections::HashMap<i32, Vec<u8>>,
     /// `LatestSave()`: the slot most recently saved to, or -1.
     pub latest_save: i32,
+    /// When the global file was last written (`sys.now()`).
+    pub last_global_save: u64,
     /// State at the last selection (`ReturnPrevSelect`).
     pub previous_selection: Option<Vec<u8>>,
     /// `SET_SELPOINTMOD_*` (`#INIT_SELPOINT_USE`): selections record the
@@ -170,6 +172,7 @@ impl Machine {
             interrupt_suspended: false,
             saved_in_memory: Default::default(),
             latest_save: -1,
+            last_global_save: 0,
             previous_selection: None,
             selpoint_auto,
             just_loaded: false,
@@ -453,6 +456,7 @@ impl Machine {
         self.savepoint_stack = self.stack.clone();
         self.memory.take_savepoint();
         self.sys.take_savepoint();
+        crate::save::flush_global(self, 30_000);
     }
 
     pub fn should_set_savepoint(&self, kind: SavepointKind) -> bool {

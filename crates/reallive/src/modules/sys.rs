@@ -24,7 +24,10 @@ pub fn dispatch_event_loop(machine: &mut Machine, command: &Command) -> Result<N
         // rtlButton / rtlCancel / rtlSystem
         300..=302 => {
             machine.return_from_farcall()?;
-            machine.sys.in_menu = false;
+            machine.sys.leave_menu();
+            // Menus record what they did (slot titles, settings) in global
+            // variables after saving; keep them.
+            crate::save::flush_global(machine, 0);
             return Ok(Next::Jumped);
         }
         // yield: return from an interrupt handler.
@@ -58,7 +61,7 @@ pub fn dispatch_event_loop(machine: &mut Machine, command: &Command) -> Result<N
             let off = command.op.opcode == 1201;
             let windows = window_range(machine, command)?;
             for index in windows {
-                if let Some(flag) = machine.sys.text.display_off.get_mut(index) {
+                if let Some(flag) = machine.sys.text.ccom_off.get_mut(index) {
                     *flag = off;
                 }
             }

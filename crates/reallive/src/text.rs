@@ -66,7 +66,6 @@ pub struct WindowConfig {
     pub name_waku_dir: i32,
     pub name_waku_setno: i32,
     pub name_centering: bool,
-    pub msgbk_use: bool,
     /// `FACE.n = x, y, behind, ...`.
     pub faces: Vec<(i32, i32, i32)>,
     /// Button flags keyed by name (`CLEAR_USE`, `EXBTN_000_USE`, ...).
@@ -164,7 +163,6 @@ impl WindowConfig {
             name_waku_dir: int("NAME_WAKU_DIR", 0),
             name_waku_setno: int("NAME_WAKU_SETNO", 0),
             name_centering: int("NAME_CENTERING", 0) != 0,
-            msgbk_use: int("MSGBK_USE", 1) != 0,
             faces,
             buttons,
         }
@@ -270,8 +268,11 @@ pub struct TextSystem {
     pub waiting_since: Option<u64>,
     /// Windows hidden by `msgHideAllTemp` / `ShowBackground`.
     pub hidden_temporarily: bool,
-    /// `SET_WINDOW_DISP_OFF` / `CCOM_MESSAGEWINDOW_OFF`: windows not drawn.
+    /// `SET_WINDOW_DISP_OFF`: windows not drawn.
     pub display_off: Vec<bool>,
+    /// `CCOM_MESSAGEWINDOW_OFF`: windows hidden while a script-drawn
+    /// system menu is up; cleared when the menu returns or a game loads.
+    pub ccom_off: Vec<bool>,
     /// `SET_MSGBK_ON` / `SET_MSGBK_OFF`: whether pages enter the backlog.
     pub backlog_enabled: bool,
     /// Window positions at the last savepoint.
@@ -304,6 +305,7 @@ impl TextSystem {
             waiting_since: None,
             hidden_temporarily: false,
             display_off: vec![false; WINDOW_COUNT],
+            ccom_off: vec![false; WINDOW_COUNT],
             backlog_enabled: true,
             savepoint_positions,
         }
@@ -354,6 +356,13 @@ impl TextSystem {
         }
     }
 
+    /// Whether window `index` is drawn (and its buttons can be pressed).
+    pub fn window_shown(&self, index: usize) -> bool {
+        self.states.get(index).is_some_and(|state| state.visible)
+            && !self.display_off.get(index).copied().unwrap_or(false)
+            && !self.ccom_off.get(index).copied().unwrap_or(false)
+    }
+
     pub fn take_savepoint(&mut self) {
         self.savepoint_positions = self.windows.iter().map(|w| w.pos).collect();
     }
@@ -367,6 +376,7 @@ impl TextSystem {
         self.backlog_view = None;
         self.waiting_since = None;
         self.hidden_temporarily = false;
+        self.ccom_off.fill(false);
     }
 
     pub fn save(&self, w: &mut crate::serial::Writer) {

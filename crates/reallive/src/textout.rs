@@ -332,7 +332,7 @@ pub fn place_char(sys: &mut System, index: usize, c: char, rest: &[char]) -> boo
         return false;
     }
     let config = sys.text.windows[index].clone();
-    sys.text.states[index].visible = true;
+    show_now(sys, index);
     let indent_after = {
         let state = &sys.text.states[index];
         (state.last_was_name && is_opening_quote(c))
@@ -394,7 +394,7 @@ pub fn set_name(sys: &mut System, index: usize, name: &str, next: Option<char>) 
     match config.name_mod {
         1 => {
             sys.text.states[index].namebox = Some(name.to_owned());
-            sys.text.states[index].visible = true;
+            show_now(sys, index);
         }
         2 | 3 => {}
         _ => {
@@ -453,9 +453,21 @@ pub fn interpret_names(text: &str, name: impl Fn(bool, usize) -> String) -> Stri
     out
 }
 
+/// Shows a window at once, cancelling a closing animation.
+fn show_now(sys: &mut System, index: usize) {
+    let state = &mut sys.text.states[index];
+    state.visible = true;
+    if matches!(state.animation, Some((_, false))) {
+        state.animation = None;
+    }
+}
+
 /// Opens a window if it is closed (with its opening animation).
 pub fn open_window(sys: &mut System, index: usize) {
-    if sys.text.states[index].visible {
+    // A window still playing its closing animation counts as closed:
+    // otherwise the animation ends and hides the text written into it.
+    let state = &sys.text.states[index];
+    if state.visible && !matches!(state.animation, Some((_, false))) {
         return;
     }
     let config = &sys.text.windows[index];
@@ -675,12 +687,8 @@ impl LongOp for PauseOp {
             }
             return Ok(false);
         }
-        // The backlog, when open, takes the input.
-        if sys.text.backlog_view.is_some() {
-            crate::backlog::handle_input(sys);
-            return Ok(false);
-        }
-        // A click on a window button does what the button does.
+        // A click on a window button does what the button does (also while
+        // reading the backlog: its arrows page through it).
         if let Some(position) = sys
             .input
             .events
@@ -690,6 +698,12 @@ impl LongOp for PauseOp {
         {
             sys.input.events.remove(position);
             crate::window_buttons::press(machine, kind)?;
+            return Ok(false);
+        }
+        let sys = &mut machine.sys;
+        // The backlog, when open, takes the input.
+        if sys.text.backlog_view.is_some() {
+            crate::backlog::handle_input(sys);
             return Ok(false);
         }
         let sys = &mut machine.sys;
@@ -1034,7 +1048,7 @@ pub fn draw_windows(
         return;
     }
     for index in 0..sys.text.states.len() {
-        if !sys.text.states[index].visible || sys.text.display_off[index] {
+        if !sys.text.window_shown(index) {
             continue;
         }
         let geometry = geometry(sys, index);

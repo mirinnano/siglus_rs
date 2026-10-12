@@ -766,6 +766,12 @@ impl Graphics {
         };
     }
 
+    /// Forgets what `CCOM_OBJECT_OFF` / `CCOM_BTNSEL_OFF` hid for a menu.
+    pub fn clear_ccom(&mut self) {
+        self.ccom_hidden_objects.clear();
+        self.ccom_hide_buttons = false;
+    }
+
     pub fn reset(&mut self) {
         let (w, h) = (self.width, self.height);
         self.dcs = vec![None; DC_COUNT];
@@ -778,6 +784,11 @@ impl Graphics {
         self.layer_shake = None;
         self.transition_frame = None;
         self.interface_hidden = false;
+        self.clear_ccom();
+        // A menu that switched to manual drawing may never switch back
+        // (the load jumped away from it); show the loaded scene.
+        self.draw_mode = DrawMode::Auto;
+        self.refresh_requested = true;
         self.hik = None;
         self.snm = Default::default();
         self.haikei_image = None;

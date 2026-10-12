@@ -124,7 +124,12 @@ pub fn serialize_slot(machine: &Machine) -> Vec<u8> {
         for value in now_date() {
             w.i32(value);
         }
-        w.i32(machine.scene_number());
+        // Where the save resumes, not the menu it was made from.
+        let scene = machine
+            .savepoint_stack
+            .last()
+            .map_or_else(|| machine.scene_number(), |frame| frame.scenario.number);
+        w.i32(scene);
         w.i32(machine.line);
     });
     w.section("memory", |w| write_local(w, &machine.memory.savepoint));
@@ -133,7 +138,8 @@ pub fn serialize_slot(machine: &Machine) -> Vec<u8> {
         w.str(&machine.sys.title);
         w.str(&machine.sys.default_grp);
         w.str(&machine.sys.default_bgr);
-        w.bool(machine.sys.syscom.skip_mode);
+        // Skip mode is not saved (a load stops skipping); kept for the format.
+        w.bool(false);
     });
     machine.save_subsystems(&mut w);
     let extra = SlotExtra {
@@ -231,7 +237,8 @@ fn write_slot_bytes(machine: &mut Machine, slot: i32, bytes: Vec<u8>) -> Result<
     }
     let path = slot_path(machine, slot);
     game_fs::create_dir_all(path.parent().expect("slot files live in a directory"))?;
-    game_fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))
+    game_fs::write_atomic(&path, bytes)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 /// Replaces the extra data of an existing save.
@@ -349,7 +356,7 @@ fn save_slot_inner(machine: &mut Machine, slot: i32) -> Result<()> {
     }
     let path = slot_path(machine, slot);
     game_fs::create_dir_all(path.parent().expect("slot files live in a directory"))?;
-    game_fs::write(&path, serialize_slot(machine))
+    game_fs::write_atomic(&path, serialize_slot(machine))
         .with_context(|| format!("failed to write {}", path.display()))?;
     machine.latest_save = slot;
     save_global(machine)?;
@@ -381,13 +388,15 @@ pub fn restore(machine: &mut Machine, bytes: &[u8]) -> Result<()> {
                 machine.sys.title = r.str()?;
                 machine.sys.default_grp = r.str()?;
                 machine.sys.default_bgr = r.str()?;
-                machine.sys.syscom.skip_mode = r.bool()?;
+                // Kept for older saves; a load always stops skipping.
+                let _skip_mode = r.bool()?;
             }
             _ => {}
         }
     }
     let stack = stack.ok_or_else(|| anyhow!("reallive: the save has no call stack"))?;
     machine.reset_for_load();
+    machine.sys.syscom.skip_mode = false;
     machine.memory.local = local;
     machine.stack = stack;
     machine.halted = false;
@@ -400,7 +409,11 @@ pub fn restore(machine: &mut Machine, bytes: &[u8]) -> Result<()> {
 pub fn load_slot(machine: &mut Machine, slot: i32) -> Result<()> {
     let bytes =
         slot_bytes(machine, slot).ok_or_else(|| anyhow!("reallive: slot {slot} is empty"))?;
-    restore(machine, &bytes)
+    restore(machine, &bytes)?;
+    // The selection point belongs to the game that was running; only
+    // `QUICKLOAD_SELKEEP` carries it over.
+    machine.previous_selection = None;
+    Ok(())
 }
 
 pub fn save_global(machine: &Machine) -> Result<()> {
@@ -430,16 +443,48 @@ pub fn save_global(machine: &Machine) -> Result<()> {
     w.section("settings", |w| crate::settings_io::write(w, &machine.sys));
     let path = global_path(machine);
     game_fs::create_dir_all(path.parent().expect("a directory"))?;
-    game_fs::write(&path, w.bytes).with_context(|| format!("failed to write {}", path.display()))
+    game_fs::write_atomic(&path, w.bytes)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// Writes the global file if it has not been written for a while (read
+/// flags and global variables survive a crash or a forced quit).
+pub fn flush_global(machine: &mut Machine, min_interval_ms: u64) {
+    let now = machine.sys.now();
+    if now.saturating_sub(machine.last_global_save) < min_interval_ms {
+        return;
+    }
+    machine.last_global_save = now;
+    if let Err(error) = save_global(machine) {
+        machine.report(format!("{error:#}"));
+    }
+}
+
+/// Reads the global file. A damaged one is set aside (`global.sav.bad`)
+/// and the game starts without it rather than not at all.
 pub fn load_global(machine: &mut Machine) -> Result<()> {
     if !machine.sys.options.persist {
         return Ok(());
     }
-    let Ok(bytes) = game_fs::read(global_path(machine)) else {
+    let path = global_path(machine);
+    let Ok(bytes) = game_fs::read(&path) else {
         return Ok(());
     };
+    if let Err(error) = read_global(machine, &bytes) {
+        let mut bad = path.as_os_str().to_owned();
+        bad.push(".bad");
+        let _ = game_fs::write(std::path::PathBuf::from(bad), &bytes);
+        machine.memory.global = Default::default();
+        machine.init_global_memory();
+        machine.report(format!(
+            "reallive: {} is damaged and was set aside: {error:#}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn read_global(machine: &mut Machine, bytes: &[u8]) -> Result<()> {
     let body = bytes
         .strip_prefix(GLOBAL_MAGIC.as_slice())
         .ok_or_else(|| anyhow!("reallive: not a global save file"))?;

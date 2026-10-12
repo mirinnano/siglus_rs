@@ -5,16 +5,26 @@ use crate::system::System;
 
 /// Opens the backlog on the most recent committed page.
 pub fn open(sys: &mut System) {
-    if sys.text.backlog.is_empty() {
-        return;
+    // `WINDOW.nnn.MSGBK_USE` only switches the window's backlog button;
+    // the backlog itself is always there.
+    if let Some(last) = sys.text.backlog.len().checked_sub(1) {
+        sys.text.backlog_view = Some(last);
     }
-    let msgbk = sys
-        .text
-        .windows
-        .get(sys.text.active)
-        .is_none_or(|config| config.msgbk_use);
-    if msgbk {
-        sys.text.backlog_view = Some(sys.text.backlog.len() - 1);
+}
+
+/// `MSGBKLEFT`: opens the backlog, or goes back one more page.
+pub fn back(sys: &mut System) {
+    match sys.text.backlog_view {
+        None => open(sys),
+        Some(page) => sys.text.backlog_view = Some(page.saturating_sub(1)),
+    }
+}
+
+/// `MSGBKRIGHT`: one page ahead; past the newest page, back to the text.
+pub fn forward(sys: &mut System) {
+    if let Some(page) = sys.text.backlog_view {
+        let last = sys.text.backlog.len().saturating_sub(1);
+        sys.text.backlog_view = (page < last).then_some(page + 1);
     }
 }
 

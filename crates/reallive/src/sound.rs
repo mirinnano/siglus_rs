@@ -796,6 +796,16 @@ impl Sound {
         self.bgm.as_ref().is_some_and(|v| v.playing(now))
     }
 
+    /// The track a save should resume: the one queued behind a fade, else
+    /// the one playing (not one fading out to silence).
+    pub fn current_track(&self, now: u64) -> Option<(String, bool)> {
+        if let Some((name, looped, ..)) = &self.queued_bgm {
+            return Some((name.clone(), *looped));
+        }
+        (self.bgm_status(now) == 1 && !self.bgm_name.is_empty())
+            .then(|| (self.bgm_name.clone(), self.bgm_looped))
+    }
+
     /// `bgmStatus`: 0 stopped, 1 playing, 2 fading out.
     pub fn bgm_status(&self, now: u64) -> i32 {
         match &self.bgm {
