@@ -15811,10 +15811,15 @@ mod call_frame_save_metadata_tests {
         ] {
             words[idx] = HEADER_SIZE;
         }
-        let mut out = Vec::with_capacity(HEADER_SIZE as usize);
+        // Room for the return addresses the tests jump to (the stream
+        // refuses a program counter past the end of the code).
+        const CODE_SIZE: i32 = 32;
+        words[2] = CODE_SIZE;
+        let mut out = Vec::with_capacity((HEADER_SIZE + CODE_SIZE) as usize);
         for word in words {
             out.extend_from_slice(&word.to_le_bytes());
         }
+        out.resize((HEADER_SIZE + CODE_SIZE) as usize, 0);
         out
     }
 
